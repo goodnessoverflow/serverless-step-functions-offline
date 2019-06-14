@@ -6,16 +6,6 @@ const Promise = require('bluebird');
 const enumList = require('./enum');
 
 module.exports = {
-    // findFunctionsPathAndHandler() {
-    //     for (const functionName in this.variables) {
-    //         const functionHandler = this.variables[functionName];
-    //         const {handler, filePath} = this._findFunctionPathAndHandler(functionHandler);
-    //
-    //         this.variables[functionName] = {handler, filePath};
-    //     }
-    //     console.log('this.va', this.variables)
-    // },
-    //
     _findFunctionPathAndHandler(functionHandler) {
         const dir = path.dirname(functionHandler);
         const handler = path.basename(functionHandler);
@@ -23,7 +13,7 @@ module.exports = {
         const filePath = `${dir}/${splitHandler[0]}.js`;
         const handlerName = `${splitHandler[1]}`;
 
-        return {handler: handlerName, filePath};
+        return { handler: handlerName, filePath };
     },
 
     buildStepWorkFlow() {
@@ -32,7 +22,9 @@ module.exports = {
         this.states = this.stateDefinition.States;
 
         return Promise.resolve()
-            .then(() => this.process(this.states[this.stateDefinition.StartAt], this.stateDefinition.StartAt, this.eventFile))
+            .then(() =>
+                this.process(this.states[this.stateDefinition.StartAt], this.stateDefinition.StartAt, this.eventFile)
+            )
             .catch(err => {
                 // console.log('OOPS', err.stack);
                 // this.cliLog(err);
@@ -74,10 +66,23 @@ module.exports = {
     _run(f, event) {
         if (!f) {
             return;
-        }// end of states
+        } // end of states
         this.executionLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~ ${this.currentStateName} started ~~~~~~~~~~~~~~~~~~~~~~~~~~~`);
-        f(event, this.contextObject, this.contextObject.done);
-
+        //Handles Promise Based Lambdas
+        return new Promise((resolve, reject) => {
+            f(event, this.contextObject, (err, data) => {
+                this.executionLog(`${this.currentStateName} runnig -- ${JSON.stringify(data)}`);
+                if (err) {
+                    // this.cliLog(err);
+                    this.executionLog(`Problem with lambda execution ${JSON.stringify(err)}`);
+                    this.contextObject.done(err, data);
+                    return reject(err);
+                }
+                this.executionLog(`${this.currentStateName} finished -- ${JSON.stringify(data)}`);
+                this.contextObject.done(err, data);
+                resolve(data);
+            });
+        });
     },
 
     _states(currentState, currentStateName) {
@@ -86,12 +91,17 @@ module.exports = {
             //before each task restore global default env variables
             process.env = Object.assign({}, this.environmentVariables);
             let f = this.variables[currentStateName];
-            f = this.functions[f];
+            f = this.functions
+                .map(func => {
+                    if (func[f]) return func[f];
+                })
+                .filter(func => func != null)[0];
+
             if (!f) {
                 this.cliLog(`Function "${currentStateName}" does not presented in serverless manifest`);
                 process.exit(1);
             }
-            const {handler, filePath} = this._findFunctionPathAndHandler(f.handler);
+            const { handler, filePath } = this._findFunctionPathAndHandler(f.handler);
             // if function has additional variables - attach it to function
             if (f.environment) {
                 process.env = _.extend(process.env, f.environment);
@@ -102,7 +112,7 @@ module.exports = {
             };
         case 'Parallel': // look through branches and push all of them
             this.eventParallelResult = [];
-            _.forEach(currentState.Branches, (branch) => {
+            _.forEach(currentState.Branches, branch => {
                 this.parallelBranch = branch;
                 return this.process(branch.States[branch.StartAt], branch.StartAt, this.eventForParallelExecution);
             });
@@ -117,8 +127,8 @@ module.exports = {
             // 3) find function which will check data: ${checkFunction}
             // 4) value which we will use in order to compare data: ${compareWithValue}
             // 5) find target function - will be used if condition true: ${f}
-            const choiceConditional = {choice: []};
-            _.forEach(currentState.Choices, (choice) => {
+            const choiceConditional = { choice: [] };
+            _.forEach(currentState.Choices, choice => {
                 const variable = choice.Variable.split('$.')[1];
                 const condition = _.pick(choice, enumList.supportedComparisonOperator);
                 if (!condition) {
@@ -148,7 +158,7 @@ module.exports = {
             // works with parameter: seconds, timestamp, timestampPath, secondsPath;
             return {
                 waitState: true,
-                f: (event) => {
+                f: event => {
                     const waitTimer = this._waitState(event, currentState, currentStateName);
                     this.cliLog(`Wait function ${currentStateName} - please wait ${waitTimer} seconds`);
                     return (arg1, arg2, cb) => {
@@ -160,12 +170,11 @@ module.exports = {
             };
         case 'Pass':
             return {
-                f: (event) => {
+                f: event => {
                     return (arg1, arg2, cb) => {
                         this.cliLog('!!! Pass State !!!');
                         const eventResult = this._passStateFields(currentState, event);
                         cb(null, eventResult);
-
                     };
                 }
             };
@@ -223,7 +232,9 @@ module.exports = {
     },
 
     _waitState(event, currentState, currentStateName) {
-        let waitTimer = 0, targetTime, timeDiff;
+        let waitTimer = 0,
+            targetTime,
+            timeDiff;
         const currentTime = moment();
         const waitListKeys = ['Seconds', 'Timestamp', 'TimestampPath', 'SecondsPath'];
         const waitField = _.omit(currentState, 'Type', 'Next', 'Result');
@@ -244,8 +255,7 @@ module.exports = {
         case 'TimestampPath':
             const timestampPath = waitField['TimestampPath'].split('$.')[1];
             if (!event[timestampPath]) {
-                const error =
-                    `An error occurred while executing the state ${currentStateName}.
+                const error = `An error occurred while executing the state ${currentStateName}.
                      The TimestampPath parameter does not reference an input value: ${waitField['TimestampPath']}`;
                 throw new this.serverless.classes.Error(error);
             }
@@ -274,7 +284,9 @@ module.exports = {
             if (err) {
                 throw `Error in function "${this.currentStateName}": ${JSON.stringify(err)}`;
             }
-            this.executionLog(`~~~~~~~~~~~~~~~~~~~~~~~~~~~ ${this.currentStateName} finished ~~~~~~~~~~~~~~~~~~~~~~~~~~~`);
+            this.executionLog(
+                `~~~~~~~~~~~~~~~~~~~~~~~~~~~ ${this.currentStateName} finished ~~~~~~~~~~~~~~~~~~~~~~~~~~~`
+            );
             let state = this.states;
             if (this.parallelBranch && this.parallelBranch.States) {
                 state = this.parallelBranch.States;
@@ -288,10 +300,9 @@ module.exports = {
         return {
             cb: cb,
             done: cb,
-            succeed: (result) => cb(null, result),
-            fail: (err) => cb(err)
+            succeed: result => cb(null, result),
+            fail: err => cb(err)
         };
-
     },
 
     executionLog(log) {
